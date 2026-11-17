@@ -38,6 +38,7 @@ fn records_go_internal_packages() {
     let result = harness::record(&harness::RecordOptions {
         crate_dir: &port,
         count: 2,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,

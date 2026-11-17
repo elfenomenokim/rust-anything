@@ -46,6 +46,7 @@ fn record(root: &Path, module: &str) -> anyhow::Result<()> {
     let recording = harness::record(&harness::RecordOptions {
         crate_dir: &out,
         count: 2,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,

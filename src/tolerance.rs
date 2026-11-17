@@ -210,6 +210,7 @@ mod tests {
             passed: 1,
             failed: 3,
             missing: Vec::new(),
+            outside_typed_api: 0,
             mismatches: vec![
                 json!({"fn": "f", "args": [1], "expected": 0.1, "actual": 0.10000000000000002}),
                 json!({"fn": "f", "args": [2], "expected": {"x": 1.5}, "actual": {"x": 1.5000000000000002}}),

@@ -50,6 +50,7 @@ fn round_trip(root: &Path, unit: &str, kind: Kind, name: &str, body: &str) {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 30,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -73,6 +74,7 @@ fn round_trip(root: &Path, unit: &str, kind: Kind, name: &str, body: &str) {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         node_args: &[],
         float_tolerance: None,
     })
@@ -89,6 +91,7 @@ fn round_trip(root: &Path, unit: &str, kind: Kind, name: &str, body: &str) {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         node_args: &[],
         float_tolerance: None,
     })
@@ -181,6 +184,7 @@ fn stubs_fail(root: &Path, unit: &str, kind: Option<Kind>, program: &str) {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 20,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -197,6 +201,7 @@ fn stubs_fail(root: &Path, unit: &str, kind: Option<Kind>, program: &str) {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         node_args: &[],
         float_tolerance: None,
     })
@@ -465,6 +470,7 @@ fn java_records_with_the_bridge_crate_inside_the_project() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &outcome.crate_dir,
         count: 10,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,

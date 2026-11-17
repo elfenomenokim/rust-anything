@@ -112,6 +112,7 @@ fn diff_rejects_an_empty_recording() {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         float_tolerance: None,
         node_args: &[],
     })
@@ -133,6 +134,7 @@ fn record_and_diff_catch_a_behavior_change() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 120,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -147,6 +149,7 @@ fn record_and_diff_catch_a_behavior_change() {
             crate_dir: dir,
             module: None,
             ignore_key_order: false,
+            typed_only: false,
             float_tolerance: None,
             node_args: &[],
         })
@@ -183,6 +186,7 @@ fn float_tolerance_preserves_object_key_order_unless_requested() {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         float_tolerance: Some(1e-9),
         node_args: &[],
     };
@@ -272,6 +276,7 @@ fn record_follows_bundler_style_imports() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 5,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -370,6 +375,7 @@ fn classes_are_bridged_recorded_and_replayed() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 150,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -394,6 +400,7 @@ fn classes_are_bridged_recorded_and_replayed() {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         float_tolerance: None,
         node_args: &[],
     })
@@ -433,6 +440,7 @@ fn tsconfig_aliases_are_followed() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 5,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -467,6 +475,7 @@ fn record_resolves_workspace_packages_to_source() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 10,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -537,6 +546,7 @@ fn python_modules_bridge_record_and_diff() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 60,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -573,6 +583,7 @@ fn python_modules_bridge_record_and_diff() {
             crate_dir: dir,
             module: None,
             ignore_key_order: false,
+            typed_only: false,
             float_tolerance: None,
             node_args: &[],
         })
@@ -635,6 +646,7 @@ fn c_units_bridge_record_and_diff() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 40,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -655,6 +667,7 @@ fn c_units_bridge_record_and_diff() {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         float_tolerance: None,
         node_args: &[],
     })
@@ -733,6 +746,7 @@ fn go_packages_bridge_record_and_diff() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 30,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -748,6 +762,7 @@ fn go_packages_bridge_record_and_diff() {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         float_tolerance: None,
         node_args: &[],
     })
@@ -814,6 +829,7 @@ fn ruby_modules_bridge_record_and_diff() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 30,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -829,6 +845,7 @@ fn ruby_modules_bridge_record_and_diff() {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         float_tolerance: None,
         node_args: &[],
     })
@@ -905,6 +922,7 @@ fn java_classes_bridge_record_and_diff() {
     let recorded = harness::record(&RecordOptions {
         crate_dir: &dir,
         count: 30,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,
@@ -920,6 +938,7 @@ fn java_classes_bridge_record_and_diff() {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         float_tolerance: None,
         node_args: &[],
     })
@@ -1007,6 +1026,7 @@ fn diff_compares_own_proto_named_properties_in_arguments_and_results() {
         crate_dir: &dir,
         module: None,
         ignore_key_order: false,
+        typed_only: false,
         float_tolerance: None,
         node_args: &[],
     };

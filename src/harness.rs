@@ -81,12 +81,19 @@ pub struct DiffOutcome {
     pub missing: Vec<String>,
     /// The first mismatches: `{ fn, args, expected, actual }`.
     pub mismatches: Vec<Value>,
+    /// Mismatches excluded by `--typed-only`: the recorded arguments cannot go through the
+    /// declared typed API. They are not counted in `failed`.
+    #[serde(default)]
+    pub outside_typed_api: usize,
 }
 
 pub struct RecordOptions<'a> {
     pub crate_dir: &'a Path,
     /// Generated cases per function.
     pub count: usize,
+    /// Only generate cases that fit the declared parameter types: skip the
+    /// deliberately-unshaped probes for class-like parameters. Curated `--inputs` are kept.
+    pub typed_only: bool,
     /// Extra cases, one `{"fn": name, "args": [...]}` JSON object per line.
     pub inputs: Option<&'a Path>,
     /// Import the original from this JS module instead of the TS source files.
@@ -130,7 +137,7 @@ pub fn record(opts: &RecordOptions) -> Result<RecordOutcome> {
             regex_functions.push(f.name.clone());
         }
         let types = &scopes[&f.file];
-        let mut all = generate(f, opts.count, types);
+        let mut all = generate(f, opts.count, types, opts.typed_only);
         let mut seen: std::collections::HashSet<String> = all
             .iter()
             .map(|a| serde_json::to_string(a).unwrap_or_default())
@@ -162,7 +169,7 @@ pub fn record(opts: &RecordOptions) -> Result<RecordOutcome> {
         let module = module_for(&class.file)?;
         let text = std::fs::read_to_string(manifest.root.join(&class.file)).unwrap_or_default();
         let types = crate::bridge::types_in_scope(&manifest.root, &class.file, &text);
-        for mut scenario in scenarios(class, opts.count.max(20), &types) {
+        for mut scenario in scenarios(class, opts.count.max(20), &types, opts.typed_only) {
             scenario["module"] = Value::String(module.clone());
             cases.push(scenario);
         }
@@ -618,6 +625,9 @@ pub struct DiffOptions<'a> {
     pub crate_dir: &'a Path,
     /// The module to test; defaults to the crate's `index.cjs`.
     pub module: Option<&'a Path>,
+    /// Skip mismatches whose recorded arguments do not fit the declared parameter types;
+    /// they are reported separately as `outside_typed_api`, not as failures.
+    pub typed_only: bool,
     /// Compare objects regardless of key order.
     pub ignore_key_order: bool,
     pub node_args: &'a [String],
@@ -645,6 +655,9 @@ pub fn diff(opts: &DiffOptions) -> Result<DiffOutcome> {
             crate::tolerance::check(t)?,
             opts.ignore_key_order || !preserve_key_order,
         );
+    }
+    if opts.typed_only {
+        apply_typed_only(opts.crate_dir, &mut outcome)?;
     }
     outcome.mismatches.truncate(SHOWN_MISMATCHES);
     anyhow::ensure!(
@@ -755,6 +768,7 @@ pub fn generate(
     f: &crate::ts::exports::ExportedFn,
     count: usize,
     types: &[LocalType],
+    typed_only: bool,
 ) -> Vec<Value> {
     let mut rng = Rng::new(f.name.bytes().fold(0x9E37_79B9_7F4A_7C15, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x100_0000_01B3)
@@ -764,7 +778,7 @@ pub fn generate(
     let mut attempts = 0;
     while out.len() < count && attempts < count * 20 {
         attempts += 1;
-        let args = args_for(&f.params, types, &mut rng);
+        let args = args_for(&f.params, types, &mut rng, typed_only);
         let key = serde_json::to_string(&args).unwrap_or_default();
         if seen.insert(key) {
             out.push(Value::Array(args));
@@ -873,14 +887,17 @@ fn args_for(
     params: &[crate::ts::exports::Param],
     types: &[LocalType],
     rng: &mut Rng,
+    typed_only: bool,
 ) -> Vec<Value> {
     let mut args: Vec<Value> = Vec::new();
     for p in params {
         let t = param_type(p);
         // Structured parameters: values that fit the TS type, and now and then a value
-        // that does not, so error paths get recorded too.
+        // that does not, so error paths get recorded too. `--typed-only` skips those
+        // unshaped probes for class-like parameters: no recorded instance can exist for
+        // them, so they only produce argument-shape noise against a typed port.
         let structured = |rng: &mut Rng| {
-            if rng.below(100) < 15 {
+            if rng.below(100) < 15 && !(typed_only && is_class_like(&p.ts_type, types)) {
                 value(&RType::Json, rng)
             } else {
                 shaped(&shape::parse(&p.ts_type), types, rng, 0)
@@ -935,13 +952,14 @@ pub fn scenarios(
     class: &crate::ts::exports::ExportedClass,
     count: usize,
     types: &[LocalType],
+    typed_only: bool,
 ) -> Vec<Value> {
     let mut rng = Rng::new(class.name.bytes().fold(0x2545_F491_4F6C_DD1D, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x100_0000_01B3)
     }));
     (0..count)
         .map(|_| {
-            let ctor = args_for(&class.constructor, types, &mut rng);
+            let ctor = args_for(&class.constructor, types, &mut rng, typed_only);
             let steps = if class.methods.is_empty() {
                 0
             } else {
@@ -953,7 +971,7 @@ pub fn scenarios(
             let calls: Vec<Value> = (0..steps)
                 .map(|_| {
                     let m = &class.methods[rng.below(class.methods.len())];
-                    let mut args = args_for(&m.params, types, &mut rng);
+                    let mut args = args_for(&m.params, types, &mut rng, typed_only);
                     for arg in &mut args {
                         if arg.is_string() {
                             if !seen.is_empty() && rng.below(2) == 0 {
@@ -969,6 +987,357 @@ pub fn scenarios(
             json!({ "class": class.name, "ctor": ctor, "calls": calls })
         })
         .collect()
+}
+
+// ---- typed-only: cases outside the declared typed API -------------------------------------
+//
+// For a typed production API most mismatches come from argument shapes the port's typed
+// signature can never receive (a list where a dataclass belongs, a string where a mapping
+// belongs). `--typed-only` splits that noise off: `record` skips the deliberately-unshaped
+// probes for class-like parameters, and `diff` excludes mismatches whose recorded arguments
+// do not fit the declared parameter types, reporting them separately as `outside_typed_api`
+// instead of failures. Both default off: without the flag every recorded case counts.
+//
+// The checks are conservative on purpose: doubt keeps the case. Only what provably cannot go
+// through the typed API is skipped.
+
+/// Words that never name a class-like: primitives, `any`/`unknown`, and the container
+/// spellings the language plugins produce (`list`, `dict`, `Record<string, ...>`).
+const NON_CLASS_WORDS: &[&str] = &[
+    "string",
+    "number",
+    "int",
+    "boolean",
+    "void",
+    "undefined",
+    "null",
+    "unknown",
+    "any",
+    "object",
+    "Object",
+    "Record",
+    "Array",
+    "ReadonlyArray",
+    "str",
+    "float",
+    "bool",
+    "bytes",
+    "bytearray",
+    "list",
+    "dict",
+    "tuple",
+    "set",
+    "frozenset",
+    "None",
+    "NoneType",
+];
+
+/// Union members at the top level, without splitting inside brackets.
+fn top_union_parts(ts_type: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in ts_type.char_indices() {
+        match c {
+            '<' | '(' | '[' | '{' => depth += 1,
+            '>' | ')' | ']' | '}' => depth -= 1,
+            '|' if depth == 0 => {
+                out.push(ts_type[start..i].trim());
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(ts_type[start..].trim());
+    out.retain(|p| !p.is_empty());
+    out
+}
+
+fn is_word(part: &str) -> bool {
+    !part.is_empty()
+        && part
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+}
+
+/// Whether a declared parameter type names a class-like (an interface, a dataclass, or any
+/// other named model): the one case where generated values cannot be instances, so the
+/// unshaped probes only produce argument-shape noise against a typed port.
+fn is_class_like(ts_type: &str, types: &[LocalType]) -> bool {
+    is_class_like_in(ts_type, types, 0)
+}
+
+fn named_is_class_like(name: &str, types: &[LocalType], depth: usize) -> bool {
+    if depth > 8 || !is_word(name) || NON_CLASS_WORDS.contains(&name) {
+        return false;
+    }
+    match types.iter().find(|t| t.name == name) {
+        Some(t) if t.alias => is_class_like_in(&t.text, types, depth + 1),
+        Some(_) => true,
+        // Named but unresolvable here (a Python dataclass, a re-exported type).
+        None => true,
+    }
+}
+
+fn is_class_like_in(ts_type: &str, types: &[LocalType], depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    for part in top_union_parts(ts_type) {
+        let part = part.trim();
+        if matches!(part, "undefined" | "null" | "void") {
+            continue;
+        }
+        // Arrays of a class-like are class-like: the elements are instances.
+        if let Some(inner) = part.strip_suffix("[]").or_else(|| {
+            part.strip_prefix("Array<")
+                .and_then(|t| t.strip_suffix('>'))
+                .or_else(|| {
+                    part.strip_prefix("ReadonlyArray<")
+                        .and_then(|t| t.strip_suffix('>'))
+                })
+        }) {
+            if named_is_class_like(inner.trim(), types, depth + 1) {
+                return true;
+            }
+            continue;
+        }
+        if named_is_class_like(part, types, depth + 1) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A record-codec marker (`{"$num": ...}`, `{"$tuple": ...}`), if that is what this is.
+fn marker_of(arg: &Value) -> Option<&str> {
+    let obj = arg.as_object()?;
+    if obj.len() != 1 {
+        return None;
+    }
+    let (key, _) = obj.iter().next()?;
+    key.starts_with('$').then_some(key.as_str())
+}
+
+fn is_undefined(arg: &Value) -> bool {
+    marker_of(arg) == Some("$undefined")
+}
+
+/// A plain object: for a structural type, not an instance or scalar marker.
+fn is_plain_object(arg: &Value) -> bool {
+    arg.is_object() && marker_of(arg).is_none()
+}
+
+/// Whether one recorded argument fits one declared type member. Conservative: anything this
+/// function does not model fits.
+fn part_fits(
+    part: &str,
+    optional: bool,
+    arg: &Value,
+    types: &[LocalType],
+    lang: crate::lang::Lang,
+    depth: usize,
+) -> bool {
+    if depth > 8 {
+        return true;
+    }
+    match part {
+        "string" => arg.is_string(),
+        "number" | "int" => {
+            arg.is_number() || matches!(marker_of(arg), Some("$num" | "$float" | "$int"))
+        }
+        "boolean" => arg.is_boolean(),
+        "unknown" | "any" | "object" | "Object" => true,
+        _ => {
+            if part.ends_with("[]")
+                || part.starts_with("Array<")
+                || part.starts_with("ReadonlyArray<")
+            {
+                // A tuple crosses the Python bridge as a sequence too.
+                return arg.is_array() || marker_of(arg) == Some("$tuple");
+            }
+            if part.starts_with("Record<") {
+                return arg.is_object();
+            }
+            if !is_word(part) || NON_CLASS_WORDS.contains(&part) {
+                // Literals, inline objects, builtins, callables: not modeled, fits.
+                return true;
+            }
+            match types.iter().find(|t| t.name == part) {
+                Some(t) if t.alias => arg_fits_in(&t.text, optional, arg, types, lang, depth),
+                Some(_) => {
+                    // A declared interface: the value is a plain object.
+                    is_plain_object(arg)
+                }
+                None if lang == crate::lang::Lang::Python => {
+                    // A Python dataclass or other named model is nominal: only an actual
+                    // instance (recorded as `$object` under its class name) fits. A dict
+                    // or list may convert through the bridge, but the original rejects it,
+                    // so there is no defined behavior to compare.
+                    arg.as_object()
+                        .is_some_and(|o| o.get("$object").is_some_and(|n| n.as_str() == Some(part)))
+                }
+                // Other languages are structural here (a TS class instance records as a
+                // plain object): without scope information, the case stays.
+                None => true,
+            }
+        }
+    }
+}
+
+/// Whether one recorded argument fits a declared parameter (record codec).
+fn arg_fits(
+    ts_type: &str,
+    optional: bool,
+    arg: &Value,
+    types: &[LocalType],
+    lang: crate::lang::Lang,
+) -> bool {
+    arg_fits_in(ts_type, optional, arg, types, lang, 0)
+}
+
+fn arg_fits_in(
+    ts_type: &str,
+    optional: bool,
+    arg: &Value,
+    types: &[LocalType],
+    lang: crate::lang::Lang,
+    depth: usize,
+) -> bool {
+    if depth > 8 {
+        return true;
+    }
+    if is_undefined(arg) {
+        return optional;
+    }
+    top_union_parts(ts_type).iter().any(|p| {
+        let p = p.trim();
+        if matches!(p, "undefined" | "null" | "void") {
+            return false;
+        }
+        part_fits(p, optional, arg, types, lang, depth + 1)
+    })
+}
+
+/// Whether a whole recorded case can go through the declared typed API: every argument
+/// fits its parameter. Conservative: doubt keeps the case.
+fn case_fits(
+    f: &crate::ts::exports::ExportedFn,
+    types: &[LocalType],
+    lang: crate::lang::Lang,
+    args: &[Value],
+    kwargs: &serde_json::Map<String, Value>,
+) -> bool {
+    use crate::ts::exports::Param;
+    let fits = |p: &Param, v: &Value| arg_fits(&p.ts_type, p.optional, v, types, lang);
+    let mut pos = 0;
+    let mut saw_rest = false;
+    for p in &f.params {
+        if p.rest {
+            saw_rest = true;
+            break;
+        }
+        if let Some(kw) = kwargs.get(&p.name)
+            && !fits(p, kw)
+        {
+            return false;
+        }
+        if pos < args.len() {
+            // A duplicated positional is invalid on both sides (both raise); it only
+            // matters here when the case is otherwise well-formed.
+            if kwargs.contains_key(&p.name) {
+                pos += 1;
+                continue;
+            }
+            if !fits(p, &args[pos]) {
+                return false;
+            }
+            pos += 1;
+        } else if !kwargs.contains_key(&p.name) && !p.optional {
+            // A missing required argument: the declared signature rejects the call.
+            return false;
+        }
+    }
+    // Extra positionals the declared signature does not take.
+    !(!saw_rest && pos < args.len())
+}
+
+fn types_for<'a>(
+    cache: &'a mut BTreeMap<String, Vec<LocalType>>,
+    manifest: &Manifest,
+    file: &str,
+) -> &'a [LocalType] {
+    if !cache.contains_key(file) {
+        let text = std::fs::read_to_string(manifest.root.join(file)).unwrap_or_default();
+        let types = crate::bridge::types_in_scope(&manifest.root, file, &text);
+        cache.insert(file.to_string(), types);
+    }
+    &cache[file]
+}
+
+/// Reclassifies mismatches whose recorded arguments cannot go through the declared typed
+/// API (`diff --typed-only`): they leave `failed` and are counted in `outside_typed_api`.
+/// Class cases and ambiguous lookups stay failures: doubt keeps the case.
+fn apply_typed_only(crate_dir: &Path, outcome: &mut DiffOutcome) -> Result<()> {
+    if outcome.mismatches.is_empty() {
+        return Ok(());
+    }
+    let manifest = Manifest::load(crate_dir)?;
+    let lang = manifest.language;
+    let text = std::fs::read_to_string(crate_dir.join(CASES)).unwrap_or_default();
+    // Keyword arguments are not repeated in the mismatch entries: recover the full case,
+    // and only when the lookup is unambiguous.
+    let mut cases: Vec<Value> = Vec::new();
+    let mut by_call: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(case) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if case.get("class").is_some() {
+            continue;
+        }
+        let name = case["fn"].as_str().unwrap_or_default();
+        let key = format!(
+            "{name}\x00{}",
+            case.get("args").map_or_else(String::new, Value::to_string)
+        );
+        by_call.entry(key).or_default().push(cases.len());
+        cases.push(case);
+    }
+    let mut type_cache: BTreeMap<String, Vec<LocalType>> = BTreeMap::new();
+    let mut kept = Vec::with_capacity(outcome.mismatches.len());
+    let mut outside = 0;
+    for m in outcome.mismatches.drain(..) {
+        let name = m["fn"].as_str().unwrap_or_default();
+        let is_class = manifest.classes.iter().any(|c| c.name == name);
+        let export = manifest.exports.iter().find(|e| e.name == name);
+        let (Some(f), false) = (export, is_class) else {
+            kept.push(m);
+            continue;
+        };
+        let args = m["args"].as_array().cloned().unwrap_or_default();
+        let key = format!("{name}\x00{}", Value::Array(args));
+        let full = match by_call.get(&key).map(Vec::as_slice) {
+            Some(&[only]) => Some(&cases[only]),
+            _ => None,
+        };
+        let Some(full) = full else {
+            kept.push(m);
+            continue;
+        };
+        let full_args = full["args"].as_array().cloned().unwrap_or_default();
+        let kwargs = full["kwargs"].as_object().cloned().unwrap_or_default();
+        let types = types_for(&mut type_cache, &manifest, &f.file).to_vec();
+        if case_fits(f, &types, lang, &full_args, &kwargs) {
+            kept.push(m);
+        } else {
+            outside += 1;
+        }
+    }
+    outcome.mismatches = kept;
+    outcome.failed = outcome.failed.saturating_sub(outside);
+    outcome.outside_typed_api += outside;
+    Ok(())
 }
 
 /// Property names for generated objects: plain, nested-looking, integer-like (JS orders those
@@ -1606,8 +1975,8 @@ mod tests {
 
     #[test]
     fn generates_deterministic_distinct_inputs() {
-        let a = generate(&f(&[("q", "string"), ("t", "string")]), 50, &[]);
-        let b = generate(&f(&[("q", "string"), ("t", "string")]), 50, &[]);
+        let a = generate(&f(&[("q", "string"), ("t", "string")]), 50, &[], false);
+        let b = generate(&f(&[("q", "string"), ("t", "string")]), 50, &[], false);
         assert_eq!(a, b);
         assert_eq!(a.len(), 50);
         let unique: std::collections::HashSet<String> = a.iter().map(|v| v.to_string()).collect();
@@ -1624,7 +1993,7 @@ mod tests {
             "m.ts",
             "export interface Edit { readonly range: { start: number, end: number }, readonly text: string }\n",
         );
-        let cases = generate(&f(&[("edits", "readonly Edit[]")]), 60, &types);
+        let cases = generate(&f(&[("edits", "readonly Edit[]")]), 60, &types, false);
         let fitting = cases
             .iter()
             .filter_map(|args| args[0].as_array())
@@ -1636,9 +2005,148 @@ mod tests {
 
     #[test]
     fn covers_number_edge_cases() {
-        let cases = generate(&f(&[("n", "number")]), 18, &[]);
+        let cases = generate(&f(&[("n", "number")]), 18, &[], false);
         let text = serde_json::to_string(&cases).unwrap();
         assert!(text.contains("NaN") && text.contains("-0"));
+    }
+
+    fn req(name: &str, ts: &str) -> Param {
+        Param {
+            name: name.into(),
+            ts_type: ts.into(),
+            ..Default::default()
+        }
+    }
+
+    fn opt(name: &str, ts: &str) -> Param {
+        Param {
+            name: name.into(),
+            ts_type: ts.into(),
+            optional: true,
+            ..Default::default()
+        }
+    }
+
+    fn with_params(params: Vec<Param>) -> ExportedFn {
+        let mut g = f(&[]);
+        g.params = params;
+        g
+    }
+
+    #[test]
+    fn class_like_names_named_models() {
+        let types = crate::ts::exports::local_types(
+            "m.ts",
+            "export interface Edit { text: string }\ntype Name = string;\n",
+        );
+        // A dataclass, an interface, and an array of either: generated values cannot be
+        // instances, so the unshaped probes are noise under `--typed-only`.
+        assert!(is_class_like("Thresholds | undefined", &[]));
+        assert!(is_class_like("Edit", &types));
+        assert!(is_class_like("Edit[]", &types));
+        assert!(is_class_like("Array<Edit>", &types));
+        // Primitives, aliases of primitives, records and unshaped unknowns stay.
+        assert!(!is_class_like("string", &[]));
+        assert!(!is_class_like("Name", &types));
+        assert!(!is_class_like("Record<string, number>", &[]));
+        assert!(!is_class_like("unknown", &[]));
+        assert!(!is_class_like("string[]", &types));
+    }
+
+    #[test]
+    fn typed_only_accepts_what_the_bridge_accepts() {
+        let py = crate::lang::Lang::Python;
+        // Primitives: the value's JSON kind must match.
+        assert!(arg_fits("string", false, &json!("hi"), &[], py));
+        assert!(!arg_fits("string", false, &json!(3), &[], py));
+        assert!(arg_fits("int", false, &json!(3), &[], py));
+        assert!(arg_fits(
+            "number",
+            false,
+            &json!({ "$num": "NaN" }),
+            &[],
+            py
+        ));
+        assert!(!arg_fits("boolean", false, &json!(1), &[], py));
+        // `None` fits only an optional parameter.
+        assert!(arg_fits(
+            "Thresholds | undefined",
+            true,
+            &json!({ "$undefined": true }),
+            &[],
+            py
+        ));
+        assert!(!arg_fits(
+            "string",
+            false,
+            &json!({ "$undefined": true }),
+            &[],
+            py
+        ));
+        // A named model is nominal in Python: only an instance of that class fits.
+        assert!(arg_fits(
+            "Thresholds | undefined",
+            true,
+            &json!({ "$object": "Thresholds", "attrs": {} }),
+            &[],
+            py
+        ));
+        assert!(!arg_fits(
+            "Thresholds | undefined",
+            true,
+            &json!({ "a": "b" }),
+            &[],
+            py
+        ));
+        assert!(!arg_fits(
+            "Thresholds | undefined",
+            true,
+            &json!([]),
+            &[],
+            py
+        ));
+        assert!(!arg_fits(
+            "Thresholds | undefined",
+            true,
+            &json!({ "$object": "Other", "attrs": {} }),
+            &[],
+            py
+        ));
+        // Untyped parameters fit everything; arrays fit sequences.
+        assert!(arg_fits("unknown", false, &json!([1]), &[], py));
+        assert!(arg_fits("string[]", false, &json!(["a"]), &[], py));
+        assert!(!arg_fits("string[]", false, &json!(42), &[], py));
+    }
+
+    #[test]
+    fn typed_only_checks_whole_calls() {
+        let py = crate::lang::Lang::Python;
+        let g = with_params(vec![req("text", "string"), opt("sep", "string")]);
+        let no_kwargs = Default::default();
+        assert!(case_fits(&g, &[], py, &[json!("hi")], &no_kwargs));
+        assert!(!case_fits(&g, &[], py, &[json!(42)], &no_kwargs));
+        assert!(!case_fits(&g, &[], py, &[], &no_kwargs));
+        // Keyword arguments are checked against their own parameter.
+        let kwargs: serde_json::Map<String, Value> =
+            [("sep".to_string(), json!(3))].into_iter().collect();
+        assert!(!case_fits(&g, &[], py, &[json!("hi")], &kwargs));
+        let kwargs: serde_json::Map<String, Value> =
+            [("sep".to_string(), json!("-"))].into_iter().collect();
+        assert!(case_fits(&g, &[], py, &[json!("hi")], &kwargs));
+    }
+
+    #[test]
+    fn typed_only_generation_skips_unshaped_class_probes() {
+        let types =
+            crate::ts::exports::local_types("m.ts", "export interface Edit { text: string }\n");
+        let g = f(&[("edits", "Edit[]")]);
+        let typed = generate(&g, 60, &types, true);
+        assert_eq!(typed.len(), 60);
+        assert!(
+            typed.iter().all(|args| args[0].is_array()),
+            "{}",
+            serde_json::to_string(&typed).unwrap_or_default()
+        );
     }
 }
 

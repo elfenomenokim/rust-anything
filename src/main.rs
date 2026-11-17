@@ -118,6 +118,10 @@ enum Cmd {
         /// below 1), e.g. 1e-9 for numeric code. Saved with the crate for diff and gate; 0 removes it.
         #[arg(long)]
         float_tolerance: Option<f64>,
+        /// Only generate cases that fit the declared parameter types: skip the
+        /// deliberately-unshaped probes for class-like parameters. Curated `--inputs` are kept.
+        #[arg(long)]
+        typed_only: bool,
     },
     /// 3b. Build the crate's JS module (napi-rs `.node` or wasm-bindgen output).
     Build {
@@ -137,6 +141,10 @@ enum Cmd {
         /// Floats match within this tolerance for this run (the one saved by `record` otherwise).
         #[arg(long)]
         float_tolerance: Option<f64>,
+        /// Skip mismatches whose recorded arguments do not fit the declared parameter types;
+        /// reported separately as `outside_typed_api`, not as failures.
+        #[arg(long)]
+        typed_only: bool,
         #[arg(long)]
         json: bool,
         #[arg(long = "node-arg", allow_hyphen_values = true)]
@@ -442,6 +450,7 @@ fn run() -> Result<ExitCode> {
             resolve_from,
             node_args,
             float_tolerance,
+            typed_only,
         } => {
             if let Some(t) = float_tolerance {
                 let mut manifest = bridge::Manifest::load(&crate_dir)?;
@@ -451,6 +460,7 @@ fn run() -> Result<ExitCode> {
             let outcome = harness::record(&harness::RecordOptions {
                 crate_dir: &crate_dir,
                 count,
+                typed_only,
                 inputs: inputs.as_deref(),
                 module: module.as_deref(),
                 resolve_from: resolve_from.as_deref(),
@@ -492,6 +502,7 @@ fn run() -> Result<ExitCode> {
             module,
             ignore_key_order,
             float_tolerance,
+            typed_only,
             json,
             node_args,
         } => {
@@ -499,6 +510,7 @@ fn run() -> Result<ExitCode> {
                 crate_dir: &crate_dir,
                 module: module.as_deref(),
                 ignore_key_order,
+                typed_only,
                 node_args: &node_args,
                 float_tolerance,
             })?;
@@ -506,6 +518,12 @@ fn run() -> Result<ExitCode> {
                 say!("{}", serde_json::to_string_pretty(&d)?);
             } else {
                 say!("{}/{} cases match", d.passed, d.total);
+                if d.outside_typed_api > 0 {
+                    say!(
+                        "Outside the typed API (not counted as failures): {}",
+                        d.outside_typed_api
+                    );
+                }
                 if !d.missing.is_empty() {
                     say!("Missing exports: {}", d.missing.join(", "));
                 }

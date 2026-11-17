@@ -216,6 +216,7 @@ pub(crate) fn replay(repo: &Path, state: &State, unit: Option<&str>) -> Result<R
             crate_dir: &crate_dir,
             module: None,
             ignore_key_order: false,
+            typed_only: false,
             float_tolerance: None,
             node_args: &[],
         }) {

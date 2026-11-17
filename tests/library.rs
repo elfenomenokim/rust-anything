@@ -67,6 +67,7 @@ fn record(dir: &Path, count: usize) {
     harness::record(&RecordOptions {
         crate_dir: dir,
         count,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,

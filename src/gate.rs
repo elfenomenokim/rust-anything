@@ -140,6 +140,7 @@ pub fn gate(crate_dir: &Path, node_args: &[String]) -> Result<GateOutcome> {
             crate_dir,
             module: None,
             ignore_key_order: false,
+            typed_only: false,
             float_tolerance: None,
             node_args,
         }) {

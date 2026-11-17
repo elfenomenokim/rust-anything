@@ -39,6 +39,7 @@ fn ruby_recording_fails_on_unencodable_results_and_preserves_cases() {
     let opts = harness::RecordOptions {
         crate_dir: &port,
         count: 2,
+        typed_only: false,
         inputs: None,
         module: None,
         resolve_from: None,

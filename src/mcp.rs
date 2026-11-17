@@ -116,6 +116,7 @@ fn tools() -> Value {
                 "module": { "type": "string", "description": "JS only: import the original from this JS module instead of the TS source." },
                 "resolve_from": { "type": "string", "description": "Resolve npm packages from this folder's node_modules." },
                 "float_tolerance": { "type": "number", "description": "Numeric code: floats match when they differ by at most this times the larger magnitude (absolute below 1), e.g. 1e-9. Saved with the crate for diff and gate; 0 removes it." },
+                "typed_only": { "type": "boolean", "description": "Only generate cases that fit the declared parameter types." },
             }, "required": ["crate"] },
         },
         {
@@ -130,6 +131,7 @@ fn tools() -> Value {
                 "crate": crate_dir,
                 "ignore_key_order": { "type": "boolean" },
                 "float_tolerance": { "type": "number", "description": "Floats match within this tolerance for this run (the one saved by record otherwise)." },
+                "typed_only": { "type": "boolean", "description": "Skip mismatches whose arguments do not fit the declared parameter types; reported as outside_typed_api." },
             }, "required": ["crate"] },
         },
         {
@@ -277,6 +279,7 @@ fn call(name: &str, args: &Value) -> Result<Value> {
                 count: args["count"]
                     .as_u64()
                     .map_or(200, |n| usize::try_from(n).unwrap_or(200)),
+                typed_only: args["typed_only"].as_bool().unwrap_or(false),
                 inputs: inputs.as_deref(),
                 module: module.as_deref(),
                 resolve_from: resolve_from.as_deref(),
@@ -310,6 +313,7 @@ fn call(name: &str, args: &Value) -> Result<Value> {
                 crate_dir: &crate_dir,
                 module: None,
                 ignore_key_order: args["ignore_key_order"].as_bool().unwrap_or(false),
+                typed_only: args["typed_only"].as_bool().unwrap_or(false),
                 node_args: &no_node_args,
                 float_tolerance: args["float_tolerance"].as_f64(),
             })?)?
